@@ -53,7 +53,7 @@ def _get_private_key_as_signer(priv_path):
     
     if priv_path != None:
         with open(priv_path, "r") as f:
-            key_hex = f.read()
+            key_hex = f.read().strip()
 
         key = Secp256k1PrivateKey.from_hex(key_hex)
         
