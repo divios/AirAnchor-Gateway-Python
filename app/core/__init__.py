@@ -126,7 +126,7 @@ class Server:
     
     def _send_request(self, data):
         headers = {
-            'Content-Typeo': 'application/octet-stream'
+            'Content-Type': 'application/octet-stream'
         }
 
         try:
