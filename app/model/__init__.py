@@ -17,6 +17,7 @@ class CertificateSignedRequest:
 
 @dataclass
 class TransactionRequest:
+    sender_public_key: str
     csr: CertificateSignedRequest
     data: str
     

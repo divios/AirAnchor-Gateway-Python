@@ -79,7 +79,7 @@ class Server:
         
         payload = self._create_payload(tr, csr_firm)
         
-        self._send_batches(payload=payload, signer_key=tr.csr.public_key)
+        self._send_batches(payload=payload)
         
         # add row to mongo
     
@@ -117,6 +117,7 @@ class Server:
         payload = {
             'csr': csr_hex,
             'csr_firm': csr_firm,
+            'pub_key': tr.sender_public_key,
             'nonce': encoded_nonce,
             'data': tr.data
         }
@@ -148,7 +149,7 @@ class Server:
         return result.text
 
 
-    def _send_batches(self, payload, signer_key):
+    def _send_batches(self, payload):
         
         payload_sha512=_sha512(payload)
         batcher_key = self._signer.get_public_key().as_hex()
