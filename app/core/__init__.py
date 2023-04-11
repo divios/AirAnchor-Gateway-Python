@@ -132,6 +132,8 @@ class Server:
         try:
             result = requests.post(self._url, headers=headers, data=data)
 
+            print(result.json())
+
             if not result.ok:
                 raise Exception("Error {}: {}".format(
                     result.status_code, result.reason))
@@ -155,7 +157,7 @@ class Server:
         address = make_location_key_address(batcher_key, payload_sha512)
 
         header = TransactionHeader(
-            signer_public_key=signer_key,
+            signer_public_key=batcher_key,
             family_name=FAMILY_NAME,
             family_version=FAMILY_VERSION,
             inputs=[address],
