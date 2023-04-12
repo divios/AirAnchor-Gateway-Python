@@ -14,6 +14,7 @@ from app.model import TransactionRequest, CertificateSignedRequest
 from app.data import MongoRepo
 
 from sawtooth_signing.secp256k1 import Secp256k1PublicKey
+from sawtooth_sdk.messaging.stream import Stream
 from sawtooth_signing import create_context
 from sawtooth_signing import CryptoFactory
 from sawtooth_signing import ParseError
@@ -21,6 +22,7 @@ from sawtooth_signing.secp256k1 import Secp256k1PrivateKey
 
 from sawtooth_sdk.protobuf.transaction_pb2 import TransactionHeader
 from sawtooth_sdk.protobuf.transaction_pb2 import Transaction
+from sawtooth_sdk.protobuf.validator_pb2 import Message
 from sawtooth_sdk.protobuf.batch_pb2 import BatchList
 from sawtooth_sdk.protobuf.batch_pb2 import BatchHeader
 from sawtooth_sdk.protobuf.batch_pb2 import Batch
@@ -67,12 +69,20 @@ def _validate_http_url(url: str):
     return 'http://' + url if not url.startswith("http://") else url
 
 
+def _validate_tcp_url(url: str):
+    return 'tcp://' + url if not url.startswith("tcp://") else url
+
+
 class Server:
     
-    def __init__(self, sawtooth_rest_url: str, ca_url: str, mongo_repo: MongoRepo, priv_key_path=None):
+    def __init__(self, sawtooth_validator_url: str, ca_url: str, mongo_repo: MongoRepo, priv_key_path=None):
         self._signer = _get_private_key_as_signer(priv_key_path)
         self._ca = _validate_http_url(ca_url)
-        self._url = "{}/{}".format(_validate_http_url(sawtooth_rest_url), 'batches')
+        
+        url = _validate_tcp_url(sawtooth_validator_url)
+        print("Initilizating zmq in {}".format(url))
+        self._connection = Stream(url)
+        
         self._mongo_repo = mongo_repo
 
     
@@ -133,7 +143,7 @@ class Server:
         }
 
         try:
-            result = requests.post(self._url, headers=headers, data=data)
+            result = requests.post(self._ca, headers=headers, data=data)
 
             print(result.json())
 
@@ -179,12 +189,17 @@ class Server:
             header_signature=signature
         )
         
-        batch_list = self._create_batch_list([transaction])
-
-        return self._send_request(batch_list.SerializeToString())
+        batch_list = self._create_batch_list([transaction]).SerializeToString()
+                
+        # Submit the batch list to the validator
+        future = self._connection.send(
+            message_type=Message.CLIENT_BATCH_SUBMIT_REQUEST,
+            content=batch_list)
+        
+        return "ok"
         
             
-    def _create_batch_list(self, transactions):
+    def _create_batch_list(self, transactions) -> BatchList:
         transaction_signatures = [t.header_signature for t in transactions]
 
         header = BatchHeader(
