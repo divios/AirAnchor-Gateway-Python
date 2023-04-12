@@ -81,7 +81,7 @@ class Server:
         
         payload = self._create_payload(tr, csr_firm)
         
-        self._send_batches(payload=payload)
+        self._send_batches(tr.sender_public_key, payload)
         
         self._save_mongo_document(tr, payload)
     
@@ -151,13 +151,13 @@ class Server:
         return result.text
 
 
-    def _send_batches(self, payload):
+    def _send_batches(self, sender_pub_key, payload):
         
         payload_sha512=_sha512(payload)
         batcher_key = self._signer.get_public_key().as_hex()
 
         # Construct the address
-        address = make_location_key_address(batcher_key, payload_sha512)
+        address = make_location_key_address(sender_pub_key, payload_sha512)
 
         header = TransactionHeader(
             signer_public_key=batcher_key,

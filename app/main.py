@@ -13,9 +13,6 @@ MONGO_URL = os.getenv('MONGO_DATABASE_URL', 'localhost:27017')
 MONGO_DATABASE = os.getenv('MONGO_DATABASE', 'AirAnchor')
 MONGO_COLLECTION = os.getenv('MONGO_COLLECTION', 'locations')
 
-print(MONGO_URL)
-print(MONGO_DATABASE)
-print(MONGO_COLLECTION)
 
 app = FastAPI()
 
