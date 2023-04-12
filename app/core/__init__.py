@@ -11,6 +11,7 @@ from binascii import hexlify
 from time import time
 
 from app.model import TransactionRequest, CertificateSignedRequest
+from app.data import MongoRepo
 
 from sawtooth_signing.secp256k1 import Secp256k1PublicKey
 from sawtooth_signing import create_context
@@ -68,10 +69,11 @@ def _validate_http_url(url: str):
 
 class Server:
     
-    def __init__(self, sawtooth_rest_url, ca_url, priv_key_path=None):
+    def __init__(self, sawtooth_rest_url: str, ca_url: str, mongo_repo: MongoRepo, priv_key_path=None):
         self._signer = _get_private_key_as_signer(priv_key_path)
         self._ca = _validate_http_url(ca_url)
         self._url = "{}/{}".format(_validate_http_url(sawtooth_rest_url), 'batches')
+        self._mongo_repo = mongo_repo
 
     
     def create_and_send_batch(self, tr: TransactionRequest):
@@ -79,9 +81,9 @@ class Server:
         
         payload = self._create_payload(tr, csr_firm)
         
-        self._send_batches(payload=payload)
+        self._send_batches(tr.sender_public_key, payload)
         
-        # add row to mongo
+        self._save_mongo_document(tr, payload)
     
     
     def _send_csr_firm_request(self, csr: CertificateSignedRequest):
@@ -149,13 +151,13 @@ class Server:
         return result.text
 
 
-    def _send_batches(self, payload):
+    def _send_batches(self, sender_pub_key, payload):
         
         payload_sha512=_sha512(payload)
         batcher_key = self._signer.get_public_key().as_hex()
 
         # Construct the address
-        address = make_location_key_address(batcher_key, payload_sha512)
+        address = make_location_key_address(sender_pub_key, payload_sha512)
 
         header = TransactionHeader(
             signer_public_key=batcher_key,
@@ -198,3 +200,14 @@ class Server:
             header_signature=signature)
 
         return BatchList(batches=[batch])
+
+
+    def _save_mongo_document(self, tr: TransactionRequest, payload):
+        document = {
+            'sender': tr.sender_public_key,
+            'signer': self._signer.get_public_key().as_hex(),
+            'ca': '',
+            'hash': _sha512(payload)
+        }
+        
+        self._mongo_repo.create(document)
