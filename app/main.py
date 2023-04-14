@@ -1,20 +1,26 @@
 
-from fastapi import FastAPI
-from app.core import Server
-from app.model import TransactionRequest, CertificateSignedRequest
-from app.data import MongoRepo
+from core import Server
+from model import TransactionRequest
+from data import MongoRepo
+from concurrent.futures import ThreadPoolExecutor
 
-import os
+import traceback
+from pika import BlockingConnection, ConnectionParameters
 
-PRIV_KEY_PATH = os.getenv('PRIVATE_KEY_FILE', None)
-SAWTOOTH_VALIDATOR_URL = os.getenv('SAWTOOTH_VALIDATOR_URL', 'tcp://localhost:4004')
-CA_API_URL = os.getenv('CA_API_URL', 'localhost:8761')
-MONGO_URL = os.getenv('MONGO_DATABASE_URL', 'localhost:27017')
-MONGO_DATABASE = os.getenv('MONGO_DATABASE', 'AirAnchor')
-MONGO_COLLECTION = os.getenv('MONGO_COLLECTION', 'locations')
+from enviroments import *
 
 
-app = FastAPI()
+def _create_rabbit_channel():
+    print('Initializing rabbitmq at {}'.format(RABBITMQ_URL))
+    rabbit_connection = BlockingConnection(ConnectionParameters(RABBITMQ_URL))
+    rabbit_channel = rabbit_connection.channel()
+    
+    rabbit_channel.queue_declare(queue='sawtooth', durable=True)
+    
+    return rabbit_channel
+
+
+rabbit_channel = _create_rabbit_channel()
 
 mongoRepo = MongoRepo(mongo_url=MONGO_URL, 
                       mongo_database=MONGO_DATABASE, mongo_collection=MONGO_COLLECTION)
@@ -22,6 +28,15 @@ mongoRepo = MongoRepo(mongo_url=MONGO_URL,
 server = Server(priv_key_path=PRIV_KEY_PATH, sawtooth_validator_url=SAWTOOTH_VALIDATOR_URL, 
                 mongo_repo=mongoRepo, ca_url=CA_API_URL)
 
-@app.post("/api/v1/transaction")
-async def process_transaction(tr: TransactionRequest):
-    server.create_and_send_batch(tr)
+def _consumer_callback(u, b, props, body):
+    try:
+        tr = TransactionRequest.from_bytes(body)
+        server.create_and_send_batch(tr)
+    except Exception as e:
+        traceback.print_exc()
+
+rabbit_channel.basic_consume(queue='sawtooth', 
+                             on_message_callback=_consumer_callback, 
+                             auto_ack=True)
+
+rabbit_channel.start_consuming()

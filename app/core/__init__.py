@@ -10,8 +10,8 @@ import secrets
 from binascii import hexlify
 from time import time
 
-from app.model import TransactionRequest, CertificateSignedRequest
-from app.data import MongoRepo
+from model import TransactionRequest, CertificateSignedRequest
+from data import MongoRepo
 
 from sawtooth_signing.secp256k1 import Secp256k1PublicKey
 from sawtooth_sdk.messaging.stream import Stream
