@@ -26,9 +26,10 @@ from sawtooth_sdk.protobuf.validator_pb2 import Message
 from sawtooth_sdk.protobuf.batch_pb2 import BatchList
 from sawtooth_sdk.protobuf.batch_pb2 import BatchHeader
 from sawtooth_sdk.protobuf.batch_pb2 import Batch
+from sawtooth_sdk.protobuf.client_batch_submit_pb2 import ClientBatchSubmitResponse
 
+from core.exceptions import Sawtooth_back_pressure_exception, Sawtooth_invalid_transaction_format
 from fastapi import HTTPException
-
 
 def _sha512(data):
     return hashlib.sha512(data).hexdigest()
@@ -87,13 +88,17 @@ class Server:
 
     
     def create_and_send_batch(self, tr: TransactionRequest):
+        print("Receiving petition to send batch request: {}".format(tr))
+        
         csr_firm = self._send_csr_firm_request(tr.csr)
         
         payload = self._create_payload(tr, csr_firm)
         
-        self._send_batches(tr.sender_public_key, payload)
+        status = self._send_batches(tr.sender_public_key, payload)
         
         self._save_mongo_document(tr, payload)
+        
+        print("Resolved as {}".format(status))
     
     
     def _send_csr_firm_request(self, csr: CertificateSignedRequest):
@@ -196,7 +201,12 @@ class Server:
             message_type=Message.CLIENT_BATCH_SUBMIT_REQUEST,
             content=batch_list)
         
-        return "ok"
+        response = future.result(timeout=10)
+        response_proto = self._parse_batch_response(response)
+        
+        final_status = self._validate_batch_response_status(response_proto)
+        
+        return final_status
         
             
     def _create_batch_list(self, transactions) -> BatchList:
@@ -215,7 +225,28 @@ class Server:
             header_signature=signature)
 
         return BatchList(batches=[batch])
-
+    
+    
+    def _parse_batch_response(self, response):
+        content = ClientBatchSubmitResponse()
+        content.ParseFromString(response.content)
+        return content
+    
+    
+    def _validate_batch_response_status(self, proto_response):
+        validator_map = {
+            'INVALID_BATCH': Sawtooth_invalid_transaction_format,
+            'ClientBatchSubmitResponse.Status.QUEUE_FULL': Sawtooth_back_pressure_exception
+        }
+        
+        proto_status = ClientBatchSubmitResponse.Status.Name(proto_response.status)
+        validation = validator_map.get(proto_status, None)
+        
+        if validation:
+            raise validation()
+        
+        return proto_status
+    
 
     def _save_mongo_document(self, tr: TransactionRequest, payload):
         document = {
