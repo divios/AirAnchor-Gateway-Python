@@ -236,7 +236,7 @@ class Server:
     def _validate_batch_response_status(self, proto_response):
         validator_map = {
             'INVALID_BATCH': Sawtooth_invalid_transaction_format,
-            'ClientBatchSubmitResponse.Status.QUEUE_FULL': Sawtooth_back_pressure_exception
+            'QUEUE_FULL': Sawtooth_back_pressure_exception
         }
         
         proto_status = ClientBatchSubmitResponse.Status.Name(proto_response.status)
