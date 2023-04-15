@@ -10,7 +10,7 @@ import secrets
 from binascii import hexlify
 from time import time
 
-from model import TransactionRequest, CertificateSignedRequest
+from model import TransactionRequest, CertificateSignedRequest, TransactionPayload
 from data import MongoRepo
 
 from sawtooth_signing.secp256k1 import Secp256k1PublicKey
@@ -87,16 +87,22 @@ class Server:
         self._mongo_repo = mongo_repo
 
     
-    def create_and_send_batch(self, tr: TransactionRequest):
-        print("Receiving petition to send batch request: {}".format(tr))
+    def create_and_send_batch(self, trs: list[TransactionRequest]):
+        print("Receiving petition to send batch request: {}".format(trs))
         
-        csr_firm = self._send_csr_firm_request(tr.csr)
+        transactions = []
+        for tr in trs:
+            csr_firm = self._send_csr_firm_request(tr.csr)
+            
+            payload = self._create_payload(tr, csr_firm)
+            transaction = self._wrap_payload_in_transaction(tr.sender_public_key, payload)
+            transactions.append(transaction)
         
-        payload = self._create_payload(tr, csr_firm)
+        batches = self._merge_transactions_to_batches(transactions)
         
-        status = self._send_batches(tr.sender_public_key, payload)
+        status = self._send_batches(batches)
         
-        self._save_mongo_document(tr, payload)
+        #self._save_mongo_document(tr, payload)
         
         print("Resolved as {}".format(status))
     
@@ -125,22 +131,83 @@ class Server:
         return ca_response.json()
     
     
-    def _create_payload(self, tr: TransactionRequest, csr_firm: str):
+    def _create_payload(self, tr: TransactionRequest, csr_firm: str) -> TransactionPayload:
         csr_encoded = cbor.dumps(tr.csr.as_str())
         csr_hex = hexlify(csr_encoded).decode('ascii')
         
         encoded_nonce = secrets.token_hex(16)
         
-        payload = {
-            'csr': csr_hex,
-            'csr_firm': csr_firm,
-            'pub_key': tr.sender_public_key,
-            'nonce': encoded_nonce,
-            'data': tr.data
-        }
+        payload = TransactionPayload(
+            csr=csr_hex,
+            csr_firm=csr_firm,
+            pub_key=tr.sender_public_key,
+            nonce=encoded_nonce,
+            data=tr.data
+        )
                 
-        return cbor.dumps(payload)
+        return payload
     
+    
+    def _wrap_payload_in_transaction(self, sender_pub: str, payload: TransactionPayload):
+        payload_hash = payload.hash()
+        batcher_key = self._signer.get_public_key().as_hex()
+        
+        address = make_location_key_address(sender_pub, payload_hash)
+
+        header = TransactionHeader(
+            signer_public_key=batcher_key,
+            family_name=FAMILY_NAME,
+            family_version=FAMILY_VERSION,
+            inputs=[address],
+            outputs=[address],
+            dependencies=[],
+            payload_sha512=payload_hash,
+            batcher_public_key=batcher_key,
+            nonce=secrets.token_hex(16)
+        ).SerializeToString()
+
+        signature = self._signer.sign(header)
+
+        transaction = Transaction(
+            header=header,
+            payload=payload.serialize(),
+            header_signature=signature
+        )
+        
+        return transaction
+     
+                
+    def _merge_transactions_to_batches(self, transactions) -> BatchList:
+        transaction_signatures = [t.header_signature for t in transactions]
+
+        header = BatchHeader(
+            signer_public_key=self._signer.get_public_key().as_hex(),
+            transaction_ids=transaction_signatures
+        ).SerializeToString()
+
+        signature = self._signer.sign(header)
+
+        batch = Batch(
+            header=header,
+            transactions=transactions,
+            header_signature=signature)
+
+        return BatchList(batches=[batch])
+    
+    
+    def _send_batches(self, batches: BatchList):
+        # Submit the batch list to the validator
+        future = self._connection.send(
+            message_type=Message.CLIENT_BATCH_SUBMIT_REQUEST,
+            content=batches.SerializeToString())
+        
+        response = future.result(timeout=5)
+        response_proto = self._parse_batch_response(response)
+        
+        final_status = self._validate_batch_response_status(response_proto)
+        
+        return final_status
+
     
     def _send_request(self, data):
         headers = {
@@ -165,67 +232,6 @@ class Server:
 
         return result.text
 
-
-    def _send_batches(self, sender_pub_key, payload):
-        
-        payload_sha512=_sha512(payload)
-        batcher_key = self._signer.get_public_key().as_hex()
-
-        # Construct the address
-        address = make_location_key_address(sender_pub_key, payload_sha512)
-
-        header = TransactionHeader(
-            signer_public_key=batcher_key,
-            family_name=FAMILY_NAME,
-            family_version=FAMILY_VERSION,
-            inputs=[address],
-            outputs=[address],
-            dependencies=[],
-            payload_sha512=payload_sha512,
-            batcher_public_key=batcher_key,
-            nonce=secrets.token_hex(16)
-        ).SerializeToString()
-
-        signature = self._signer.sign(header)
-
-        transaction = Transaction(
-            header=header,
-            payload=payload,
-            header_signature=signature
-        )
-        
-        batch_list = self._create_batch_list([transaction]).SerializeToString()
-                
-        # Submit the batch list to the validator
-        future = self._connection.send(
-            message_type=Message.CLIENT_BATCH_SUBMIT_REQUEST,
-            content=batch_list)
-        
-        response = future.result(timeout=10)
-        response_proto = self._parse_batch_response(response)
-        
-        final_status = self._validate_batch_response_status(response_proto)
-        
-        return final_status
-        
-            
-    def _create_batch_list(self, transactions) -> BatchList:
-        transaction_signatures = [t.header_signature for t in transactions]
-
-        header = BatchHeader(
-            signer_public_key=self._signer.get_public_key().as_hex(),
-            transaction_ids=transaction_signatures
-        ).SerializeToString()
-
-        signature = self._signer.sign(header)
-
-        batch = Batch(
-            header=header,
-            transactions=transactions,
-            header_signature=signature)
-
-        return BatchList(batches=[batch])
-    
     
     def _parse_batch_response(self, response):
         content = ClientBatchSubmitResponse()

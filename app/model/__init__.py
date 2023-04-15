@@ -1,6 +1,7 @@
 
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 import cbor
+import hashlib
 
 @dataclass
 class CertificateSignedRequest:
@@ -30,11 +31,11 @@ class TransactionRequest:
     csr: CertificateSignedRequest
     data: str
     
-    def as_str(self):
-        return {
-            'csr': self.csr.as_str(),
-            'data': self.data
-        }
+    def as_dict(self):
+        return asdict(self)
+        
+    def serialize(self) -> str:
+        return cbor.dumps(self.as_dict())
         
     @staticmethod
     def from_dict(dict: dict):
@@ -46,10 +47,29 @@ class TransactionRequest:
         return TransactionRequest(dict['sender_public_key'], CertificateSignedRequest.from_dict(dict['csr']), dict['data'])
         
     @staticmethod
-    def from_bytes(encoded):
+    def deserialize(encoded):
         try:
             dict = cbor.loads(encoded)
         except Exception as e:
             raise Exception("Malformed transaction request bytes") from e
         
         return TransactionRequest.from_dict(dict)
+    
+    
+@dataclass
+class TransactionPayload:
+    csr: str
+    csr_firm: str
+    pub_key: str
+    nonce: str
+    data: str
+
+    def as_dict(self):
+        return asdict(self)
+
+    def serialize(self):
+        return cbor.dumps(self.as_dict())
+    
+    def hash(self):
+        return hashlib.sha512(
+            self.serialize()).hexdigest()
