@@ -91,18 +91,21 @@ class Server:
         print("Receiving petition to send batch request: {}".format(trs))
         
         transactions = []
+        request_payload_tuple = []
         for tr in trs:
             csr_firm = self._send_csr_firm_request(tr.csr)
             
             payload = self._create_payload(tr, csr_firm)
             transaction = self._wrap_payload_in_transaction(tr.sender_public_key, payload)
+            
             transactions.append(transaction)
+            request_payload_tuple.append((tr, payload))
         
         batches = self._merge_transactions_to_batches(transactions)
         
         status = self._send_batches(batches)
         
-        #self._save_mongo_document(tr, payload)
+        self._save_mongo_document(request_payload_tuple)
         
         print("Resolved as {}".format(status))
     
@@ -254,12 +257,14 @@ class Server:
         return proto_status
     
 
-    def _save_mongo_document(self, tr: TransactionRequest, payload):
-        document = {
-            'sender': tr.sender_public_key,
-            'signer': self._signer.get_public_key().as_hex(),
-            'ca': '',
-            'hash': _sha512(payload)
-        }
+    def _save_mongo_document(self, tr_map):
+        for request, transaction in tr_map:
         
-        self._mongo_repo.create(document)
+            document = {
+                'sender': request.sender_public_key,
+                'signer': self._signer.get_public_key().as_hex(),
+                'ca': '',
+                'hash': transaction.hash()
+            }
+        
+            self._mongo_repo.create(document)

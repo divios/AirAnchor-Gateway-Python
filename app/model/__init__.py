@@ -2,8 +2,10 @@
 from dataclasses import dataclass, asdict
 import cbor
 import hashlib
+import json
+from functools import lru_cache
 
-@dataclass
+@dataclass(frozen=True)
 class CertificateSignedRequest:
     distinguished_name: str
     public_key: str
@@ -15,7 +17,7 @@ class CertificateSignedRequest:
             'public_key': self.public_key,
             'optional_params': self.optional_params
         }
-
+        
     @staticmethod
     def from_dict(dict: dict):
         attributes = ['distinguished_name', 'public_key', 'optional_params']
@@ -25,7 +27,7 @@ class CertificateSignedRequest:
         
         return CertificateSignedRequest(dict['distinguished_name'], dict['public_key'], dict['optional_params'])
 
-@dataclass
+@dataclass(frozen=True)
 class TransactionRequest:
     sender_public_key: str
     csr: CertificateSignedRequest
@@ -56,7 +58,7 @@ class TransactionRequest:
         return TransactionRequest.from_dict(dict)
     
     
-@dataclass
+@dataclass(frozen=True)
 class TransactionPayload:
     csr: str
     csr_firm: str
