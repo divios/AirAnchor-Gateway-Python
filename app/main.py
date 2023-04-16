@@ -6,11 +6,13 @@ from data import MongoRepo
 from threading import Thread
 from concurrent.futures import ThreadPoolExecutor
 from pyrate_limiter import Duration, RequestRate, Limiter
+from pyrate_limiter.exceptions import BucketFullException
 
 import functools
 import queue
 import time
 import threading
+import random
 
 import traceback
 from pika import BlockingConnection, ConnectionParameters
@@ -73,7 +75,8 @@ def consume_queue():
         while (tokens:= buffer.qsize()) == 0:                                  # sleep until message arrives
             time.sleep(0.2)
                                     
-        while not token_bucket.consume(num_tokens=max(1, tokens - remaining)):               # Wait for enough tokens
+        remaining_random = int(random.gauss(remaining/2, remaining/4))
+        while not token_bucket.consume(num_tokens=max(1, tokens - remaining_random)):               # Wait for enough tokens
             pass
         
         if tokens > LEAKY_BUCKET_LIMIT:                                        # Remove excess and save it to remaining
@@ -83,9 +86,7 @@ def consume_queue():
             excess = min(remaining, LEAKY_BUCKET_LIMIT - tokens)
             remaining -= excess
             tokens += excess
-        
-        leaky_bucket.try_acquire('bucket')
-                                
+                                 
         return tokens
     
     def get_buffer_messages(tokens):
