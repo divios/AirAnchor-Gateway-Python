@@ -7,6 +7,7 @@ from datetime import datetime
 class MongoRepo:
     
     def __init__(self, mongo_url, mongo_database, mongo_collection):
+        print('Itinializing mongo connection at {}'.format(mongo_url))
         self._client = MongoClient(mongo_url)
         self._db = self._client[mongo_database]
         self._collection = self._db[mongo_collection]
