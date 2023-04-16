@@ -1,14 +1,16 @@
 
 from core import Server
+from utils.TokenBucket import TokenBucket
 from model import TransactionRequest
 from data import MongoRepo
 from threading import Thread
 from concurrent.futures import ThreadPoolExecutor
+from pyrate_limiter import Duration, RequestRate, Limiter
 
 import functools
 import queue
 import time
-from token_bucket import MemoryStorage, Limiter
+import threading
 
 import traceback
 from pika import BlockingConnection, ConnectionParameters
@@ -39,10 +41,11 @@ server = Server(priv_key_path=PRIV_KEY_PATH,
                 ca_url=CA_API_URL)
 
 
-storage = MemoryStorage()
-limiter = Limiter(rate=TOKEN_RATE, capacity=TOKEN_CAPACITY, storage=storage) 
+token_bucket = TokenBucket(rate=TOKEN_RATE, capacity=TOKEN_CAPACITY) 
+leaky_bucket = Limiter(RequestRate(limit=LEAKY_BUCKET_LIMIT, interval=Duration.SECOND))
 buffer = queue.Queue(maxsize=TOKEN_CAPACITY)
 
+remaining = 0
 
 def consume_queue():
     def ack_batch(messages):
@@ -61,15 +64,28 @@ def consume_queue():
         cb = functools.partial(inner_reject, messages)
         ch.connection.add_callback_threadsafe(cb)
         
+
+    @leaky_bucket.ratelimit('bucket', delay=True)
     def wait_to_consume():
+        global remaining
         tokens = 0
-        
+
         while (tokens:= buffer.qsize()) == 0:                                  # sleep until message arrives
             time.sleep(0.2)
-                
-        while not limiter.consume(key='bucket', num_tokens=tokens):          # Wait for enought tokens
+                                    
+        while not token_bucket.consume(num_tokens=max(1, tokens - remaining)):               # Wait for enough tokens
             pass
         
+        if tokens > LEAKY_BUCKET_LIMIT:                                        # Remove excess and save it to remaining
+            remaining += tokens - LEAKY_BUCKET_LIMIT
+            tokens = LEAKY_BUCKET_LIMIT
+        else:                                                                  # If we are behind limit, add remaining if possible
+            excess = min(remaining, LEAKY_BUCKET_LIMIT - tokens)
+            remaining -= excess
+            tokens += excess
+        
+        leaky_bucket.try_acquire('bucket')
+                                
         return tokens
     
     def get_buffer_messages(tokens):
@@ -117,6 +133,7 @@ def _consumer_callback(ch, method, props, body):
     try:
         buffer.put((ch, method, body))
     except queue.Full:
+        print("Requeuing, buffer is full")
         ch.basic_reject(delivery_tag = method.delivery_tag, requeue=True)       # Requeue if buffer is full
     
     

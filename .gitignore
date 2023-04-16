@@ -1,0 +1,6 @@
+*.pyc
+.idea
+.devcontainer
+.vscode
+priv.key
+priv-key
