@@ -57,12 +57,12 @@ class TokenBucket(object):
         self._capacity = capacity
         self._storage = MemoryStorage()
         
-    def get_tokens_count(self):
-        self._storage.replenish('bucket', self._rate, self._capacity)
+    def get_tokens_count(self, key='bucket'):
+        self._storage.replenish(key, self._rate, self._capacity)
         
-        return self._storage.get_token_count('bucket')
+        return self._storage.get_token_count(key)
 
-    def consume(self, num_tokens=1):
+    def consume(self, key='bucket', num_tokens=1):
         """Attempt to take one or more tokens from a bucket.
         If the specified token bucket does not yet exist, it will be
         created and initialized to full capacity before proceeding. 
@@ -87,8 +87,8 @@ class TokenBucket(object):
         if num_tokens < 1:
             raise ValueError('num_tokens must be >= 1')
 
-        self._storage.replenish('bucket', self._rate, self._capacity)
-        return self._storage.consume('bucket', num_tokens)
+        self._storage.replenish(key, self._rate, self._capacity)
+        return self._storage.consume(key, num_tokens)
 
 
 class MemoryStorage():
