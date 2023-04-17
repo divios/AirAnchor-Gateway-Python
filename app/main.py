@@ -1,7 +1,7 @@
 
 from core import Server
 from utils.TokenBucket import TokenBucket
-from model import TransactionRequest
+from model import TransactionRequest, TransactionPayload
 from data import MongoRepo
 from threading import Thread
 from concurrent.futures import ThreadPoolExecutor
@@ -57,17 +57,9 @@ def consume_queue():
         ch.connection.add_callback_threadsafe(cb)
         
     def reject_batch(messages, requeue=False):
-        ch, *ignore = messages[-1]  # take last message
-        
-        def inner_reject(messages):
             for ch, method, *ignore in messages:     # Reject all messages, hence message is requeue for later processing (backoff)
                 ch.basic_reject(delivery_tag = method.delivery_tag, requeue=requeue)
                 
-        cb = functools.partial(inner_reject, messages)
-        ch.connection.add_callback_threadsafe(cb)
-        
-
-    @leaky_bucket.ratelimit('bucket', delay=True)
     def wait_to_consume():
         global remaining
         tokens = 0
@@ -75,8 +67,7 @@ def consume_queue():
         while (tokens:= buffer.qsize()) == 0:                                  # sleep until message arrives
             time.sleep(0.2)
                                     
-        remaining_random = int(random.gauss(remaining/2, remaining/4))
-        while not token_bucket.consume(num_tokens=max(1, tokens - remaining_random)):               # Wait for enough tokens
+        while not token_bucket.consume(num_tokens=tokens):               # Wait for enough tokens
             pass
         
         if tokens > LEAKY_BUCKET_LIMIT:                                        # Remove excess and save it to remaining
@@ -132,18 +123,20 @@ def consume_queue():
 def _consumer_callback(ch, method, props, body):
     print('Received message: {}'.format(body))
     try:
-        buffer.put((ch, method, body))
+        buffer.put((ch, method, body), block=True, timeout=1.2)
     except queue.Full:
-        print("Requeuing, buffer is full")
-        ch.basic_reject(delivery_tag = method.delivery_tag, requeue=True)       # Requeue if buffer is full
+        cb = lambda: ch.basic_reject(delivery_tag = method.delivery_tag, requeue=True)       # Requeue if buffer is full
+        
+        ch.connection.add_callback_threadsafe(cb)
     
-    
-    
+        
 consume_thread = Thread(target=consume_queue)
 consume_thread.start()
 
-
+rabbit_channel.basic_qos(prefetch_count=5)
 rabbit_channel.basic_consume(queue='sawtooth', 
-                             on_message_callback=_consumer_callback)
+                             on_message_callback=_consumer_callback,
+                             auto_ack=False
+                             )
 
 rabbit_channel.start_consuming()

@@ -10,7 +10,7 @@ import secrets
 from binascii import hexlify
 from time import time
 
-from model import TransactionRequest, CertificateSignedRequest, TransactionPayload
+from model import TransactionRequest, CertificateRequest, TransactionPayload
 from data import MongoRepo
 
 from sawtooth_signing.secp256k1 import Secp256k1PublicKey
@@ -41,6 +41,7 @@ FAMILY_VERSION = '1.0'
 LOCATION_KEY_ADDRESS_PREFIX = _sha512(
     FAMILY_NAME.encode('utf-8'))[:6]
 
+CONTEXT = create_context('secp256k1')
 
 def make_location_key_address(key, hash=None):
     prefix = LOCATION_KEY_ADDRESS_PREFIX + key[:6]
@@ -52,8 +53,7 @@ def make_location_key_address(key, hash=None):
 
 
 def _get_private_key_as_signer(priv_path):
-    context = create_context('secp256k1')
-    crypto_factory = CryptoFactory(context=context)
+    crypto_factory = CryptoFactory(context=CONTEXT)
     
     if priv_path != None:
         with open(priv_path, "r") as f:
@@ -62,7 +62,7 @@ def _get_private_key_as_signer(priv_path):
         key = Secp256k1PrivateKey.from_hex(key_hex)
         
     else:
-        key = context.new_random_private_key()
+        key = CONTEXT.new_random_private_key()
         
     return crypto_factory.new_signer(key)
 
@@ -91,37 +91,47 @@ class Server:
         print("Receiving petition to send batch request: {}".format(trs))
         
         transactions = []
-        request_payload_tuple = []
+        transactions_payload = []
         for tr in trs:
-            csr_firm = self._send_csr_firm_request(tr.csr)
+            if not self._validate_transaction_request(tr):
+                continue
             
-            payload = self._create_payload(tr, csr_firm)
-            transaction = self._wrap_payload_in_transaction(tr.sender_public_key, payload)
+            certificate_signature = self._send_csr_firm_request(tr.header.certificate_request)
             
+            payload = self._create_payload(tr, certificate_signature)
+            transaction = self._wrap_payload_in_transaction(payload)
+            
+            transactions_payload.append(payload)
             transactions.append(transaction)
-            request_payload_tuple.append((tr, payload))
         
         batches = self._merge_transactions_to_batches(transactions)
         
         status = self._send_batches(batches)
         
-        self._save_mongo_document(request_payload_tuple)
+        self._save_mongo_document(transactions_payload)
         
         print("Resolved as {}".format(status))
     
     
-    def _send_csr_firm_request(self, csr: CertificateSignedRequest):
-        def validate_pub_key(pub_key):
-            try:
-                Secp256k1PublicKey.from_hex(pub_key)
-            except Exception:
-                raise HTTPException(status_code=400, detail="Invalid public key")
+    def _validate_transaction_request(self, tr: TransactionRequest):
+        try:
+            pub_key = Secp256k1PublicKey.from_hex(tr.header.sender_public_key)
+        except Exception:
+            print("Invalid public key")
+            return False
             
-        validate_pub_key(csr.public_key)
+        if not CONTEXT.verify(tr.signature, tr.header.serialize(), pub_key):
+            print('Invalid signature')
+            return False
+        
+        return True
+       
+    
+    def _send_csr_firm_request(self, csr: CertificateRequest):
         ca_firm_url = '{}/{}'.format(self._ca, 'api/v1/sign')
                     
         try:
-            ca_response = requests.post(ca_firm_url, json=csr.as_str())
+            ca_response = requests.post(ca_firm_url, json=csr.as_dict())
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
          
@@ -135,27 +145,20 @@ class Server:
     
     
     def _create_payload(self, tr: TransactionRequest, csr_firm: str) -> TransactionPayload:
-        csr_encoded = cbor.dumps(tr.csr.as_str())
-        csr_hex = hexlify(csr_encoded).decode('ascii')
-        
-        encoded_nonce = secrets.token_hex(16)
-        
-        payload = TransactionPayload(
-            csr=csr_hex,
-            csr_firm=csr_firm,
-            pub_key=tr.sender_public_key,
-            nonce=encoded_nonce,
+        return TransactionPayload.create(
+            signer=self._signer,
+            certificate_request=tr.header.certificate_request,
+            certificate_authority_signature=csr_firm,
             data=tr.data
         )
-                
-        return payload
     
     
-    def _wrap_payload_in_transaction(self, sender_pub: str, payload: TransactionPayload):
+    def _wrap_payload_in_transaction(self, payload: TransactionPayload) -> Transaction:
         payload_hash = payload.hash()
         batcher_key = self._signer.get_public_key().as_hex()
+        sender_key = payload.sender_public_key
         
-        address = make_location_key_address(sender_pub, payload_hash)
+        address = make_location_key_address(sender_key, payload_hash)
 
         header = TransactionHeader(
             signer_public_key=batcher_key,
@@ -176,7 +179,7 @@ class Server:
             payload=payload.serialize(),
             header_signature=signature
         )
-        
+                
         return transaction
      
                 
@@ -242,13 +245,14 @@ class Server:
         return content
     
     
-    def _validate_batch_response_status(self, proto_response):
+    def _validate_batch_response_status(self, proto_response):        
         validator_map = {
             'INVALID_BATCH': Sawtooth_invalid_transaction_format,
             'QUEUE_FULL': Sawtooth_back_pressure_exception
         }
         
         proto_status = ClientBatchSubmitResponse.Status.Name(proto_response.status)
+
         validation = validator_map.get(proto_status, None)
         
         if validation:
@@ -257,14 +261,14 @@ class Server:
         return proto_status
     
 
-    def _save_mongo_document(self, tr_map):
-        for request, transaction in tr_map:
+    def _save_mongo_document(self, transactions_payload: list[TransactionPayload]):
+        for payload in transactions_payload:
         
             document = {
-                'sender': request.sender_public_key,
+                'sender': payload.sender_public_key,
                 'signer': self._signer.get_public_key().as_hex(),
                 'ca': '',
-                'hash': transaction.hash()
+                'hash': payload.hash()
             }
         
             self._mongo_repo.create(document)
