@@ -4,40 +4,37 @@ from utils.TokenBucket import TokenBucket
 from model import TransactionRequest, TransactionPayload
 from data import MongoRepo
 from threading import Thread
-from concurrent.futures import ThreadPoolExecutor
 from pyrate_limiter import Duration, RequestRate, Limiter
-from pyrate_limiter.exceptions import BucketFullException
 
-import functools
 import queue
 import time
-import threading
-import random
 
 import traceback
 from pika import BlockingConnection, ConnectionParameters
 
 from enviroments import *
-from core.exceptions import Sawtooth_back_pressure_exception, Sawtooth_invalid_transaction_format
+from core.exceptions import Sawtooth_back_pressure_exception
 
 
 def _create_rabbit_channel():
     print('Initializing rabbitmq at {}'.format(RABBITMQ_URL))
-    rabbit_connection = BlockingConnection(ConnectionParameters(RABBITMQ_URL))
+    rabbit_connection = BlockingConnection(ConnectionParameters(host=RABBITMQ_URL,
+                                                                blocked_connection_timeout=30))
     rabbit_channel = rabbit_connection.channel()
     
     rabbit_channel.queue_declare(queue='sawtooth', durable=True)
     
-    return rabbit_channel
+    return rabbit_connection, rabbit_channel
 
 
-rabbit_channel = _create_rabbit_channel()
+rabbit_connection, rabbit_channel = _create_rabbit_channel()
 
 mongoRepo = MongoRepo(mongo_url=MONGO_URL, 
                       mongo_database=MONGO_DATABASE, 
                       mongo_collection=MONGO_COLLECTION)
 
-server = Server(priv_key_path=PRIV_KEY_PATH, 
+server = Server(rabbit_connection=rabbit_connection,
+                priv_key_path=PRIV_KEY_PATH, 
                 sawtooth_validator_url=SAWTOOTH_VALIDATOR_URL, 
                 mongo_repo=mongoRepo,
                 ca_url=CA_API_URL)
@@ -128,7 +125,7 @@ def _consumer_callback(ch, method, props, body):
         cb = lambda: ch.basic_reject(delivery_tag = method.delivery_tag, requeue=True)       # Requeue if buffer is full
         
         ch.connection.add_callback_threadsafe(cb)
-    
+                
         
 consume_thread = Thread(target=consume_queue)
 consume_thread.start()
