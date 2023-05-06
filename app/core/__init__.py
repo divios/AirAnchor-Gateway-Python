@@ -1,14 +1,19 @@
 
 
+from threading import Thread
+from pika import BlockingConnection, ConnectionParameters
 import requests
 import hashlib
 import random
 import os
 import cbor
 import secrets
+import asyncio
+
+from enviroments import *
 
 from binascii import hexlify
-from time import time
+from time import time, monotonic, sleep
 
 from model import TransactionRequest, CertificateRequest, TransactionPayload
 from data import MongoRepo
@@ -76,7 +81,8 @@ def _validate_tcp_url(url: str):
 
 class Server:
     
-    def __init__(self, sawtooth_validator_url: str, ca_url: str, mongo_repo: MongoRepo, priv_key_path=None):
+    def __init__(self, rabbit_connection, sawtooth_validator_url: str, ca_url: str, mongo_repo: MongoRepo, priv_key_path=None):
+        self.rabbit_connection = rabbit_connection
         self._signer = _get_private_key_as_signer(priv_key_path)
         self._ca = _validate_http_url(ca_url)
         
@@ -108,8 +114,8 @@ class Server:
         
         status = self._send_batches(batches)
         
-        self._save_mongo_document(transactions_payload)
-        
+        self._start_blockchain_event_callback_listener(transactions_payload)
+              
         print("Resolved as {}".format(status))
     
     
@@ -260,15 +266,52 @@ class Server:
         
         return proto_status
     
-
-    def _save_mongo_document(self, transactions_payload: list[TransactionPayload]):
+    
+    def _start_blockchain_event_callback_listener(self, transactions_payload: list[TransactionPayload]):
+        def _async_task(hash):            
+            connection = BlockingConnection(ConnectionParameters(host=RABBITMQ_URL,
+                                                                blocked_connection_timeout=30)) 
+            
+            channel = connection.channel()
+            channel.queue_declare(queue=hash, durable=False)
+            
+            result = False
+            start_time = monotonic()
+            while monotonic() - start_time < 30:
+                
+                response = channel.basic_get(queue=hash, auto_ack=True)
+                
+                if all(x is not None for x in response):            # Nos han respondido
+                    result = True
+                    break
+            
+                sleep(0.4)
+            
+            if result:
+                self._save_mongo_document(payload)
+                print("Result for hash {} confirmed!".format(hash))
+            else:
+                print("Result for hash {} was not confirmed".format(hash))
+            
+            channel.queue_delete(queue=hash)
+            
+            channel.close()
+            connection.close()
+                
+            
         for payload in transactions_payload:
+            hash = payload.hash()
+            
+            consume_thread = Thread(target=_async_task, args=[hash])
+            consume_thread.start()
+            
         
-            document = {
-                'sender': payload.sender_public_key,
-                'signer': self._signer.get_public_key().as_hex(),
-                'ca': '',
-                'hash': payload.hash()
-            }
-        
-            self._mongo_repo.create(document)
+    def _save_mongo_document(self, payload: TransactionPayload):
+        document = {
+            'sender': payload.sender_public_key,
+            'signer': self._signer.get_public_key().as_hex(),
+            'ca': '',
+            'hash': payload.hash()
+        }
+    
+        self._mongo_repo.create(document)
